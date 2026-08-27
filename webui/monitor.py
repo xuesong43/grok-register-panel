@@ -56,6 +56,7 @@ try:
     )
     from webui.process_utils import (
         find_managed_processes,
+        read_verified_pid_file,
         terminate_managed_processes,
         write_pid_file,
     )
@@ -307,6 +308,28 @@ def process_running():
         "batch_pid": None,
         "batch_etime": None,
     }
+    # fast path: check pid files via single-process lookup (no full scan) to keep UI responsive
+    try:
+        orch_pid = read_verified_pid_file(ORCH_PID, ROOT, ("run_until_100.py",))
+        batch_pid = read_verified_pid_file(BATCH_PID, ROOT, ("run_batch_headless.py",))
+        if orch_pid or batch_pid:
+            # verify quickly and return if either pid file is valid; avoids 7s full psutil scan on Windows
+            if orch_pid:
+                info["orch_running"] = True
+                info["orch_pid"] = orch_pid
+                info["running"] = True
+                info["pid"] = orch_pid
+            if batch_pid:
+                info["batch_running"] = True
+                info["batch_pid"] = batch_pid
+                if not info["running"]:
+                    info["running"] = True
+                    info["pid"] = batch_pid
+            # if pid file gave a hit, return immediately
+            if info["running"]:
+                return info
+    except Exception:
+        pass
     orch = _find_managed_processes(("run_until_100.py",))
     batch = _find_managed_processes(("run_batch_headless.py",))
 
@@ -403,9 +426,15 @@ def parse_log(path, max_tail=400_000):
     last_lines = lines[-40:]
     if size > max_tail:
         def gcount(pat):
-            r = subprocess.run(["grep", "-c", pat, str(path)], capture_output=True, text=True)
+            # Pure-Python full-file count; POSIX grep does not exist on Windows.
             try:
-                return int(r.stdout.strip() or 0)
+                rx = re.compile(pat)
+                n = 0
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if rx.search(line):
+                            n += 1
+                return n
             except Exception:
                 return 0
 

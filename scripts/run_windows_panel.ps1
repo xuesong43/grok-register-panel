@@ -6,9 +6,22 @@ Set-Location $Root
 
 $venvPy = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) {
-    throw "找不到 .venv\Scripts\python.exe，先运行 scripts\setup_windows.ps1"
+    $sysPy = "D:\Dev\Ide\Python\python.exe"
+    if (Test-Path $sysPy) {
+        $venvPy = $sysPy
+        Write-Host "未找到 .venv，使用系统 Python: $venvPy"
+    } else {
+        $cmd = Get-Command python -ErrorAction SilentlyContinue
+        if ($cmd) { $venvPy = $cmd.Source; Write-Host "未找到 .venv，使用 PATH Python: $venvPy" } else {
+            throw "找不到 .venv\Scripts\python.exe 且系统也无 python，先运行 scripts\setup_windows.ps1 或安装 Python 3.10+"
+        }
+    }
 }
 
+if (-not $env:MONITOR_TOKEN) {
+    $tokFile = Join-Path $Root "log\monitor.token"
+    if (Test-Path $tokFile) { $env:MONITOR_TOKEN = (Get-Content $tokFile -Raw -Encoding UTF8).Trim() }
+}
 if (-not $env:MONITOR_TOKEN) {
     $env:MONITOR_TOKEN = & $venvPy -c "import secrets; print(secrets.token_urlsafe(32))"
     Write-Host "MONITOR_TOKEN=$($env:MONITOR_TOKEN)"

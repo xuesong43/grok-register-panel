@@ -24,3 +24,7 @@ stickies*.txt
 *.bak*
 *.fixed-keep
 .DS_Store
+
+.wrangler/
+config.json.lock
+

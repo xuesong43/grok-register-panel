@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from runtime_platform import (
     RuntimePlatformError,
     _load_beijing_timezone,
+    _windows_node_options_with_guard,
     apply_playwright_node_env,
     batch_launch_command,
     batch_runtime_error,
@@ -223,7 +224,60 @@ def test_windows_playwright_node_skips_posix_wrapper():
     options = out.get("NODE_OPTIONS", "")
     assert "playwright-epipe-guard.js" in options
     assert "--require \"" in options
+    assert "\\" not in options
+    assert "/scripts/playwright-epipe-guard.js" in options.replace("\\", "/")
     assert out["PLAYWRIGHT_NODEJS_PATH"].endswith("node.exe")
+    stale = apply_playwright_node_env(
+        {
+            "PLAYWRIGHT_NODEJS_PATH": str(wrapper),
+            "GROK_PLAYWRIGHT_NODE": "",
+            "NODE_OPTIONS": f'--require "{ROOT / "scripts" / "playwright-epipe-guard.js"}"',
+        },
+        platform_name="win32",
+        which=which,
+    )
+    stale_options = stale.get("NODE_OPTIONS", "")
+    assert "\\" not in stale_options
+    assert "/scripts/playwright-epipe-guard.js" in stale_options
+    assert stale_options.count("playwright-epipe-guard.js") == 1
+
+
+def test_windows_node_options_rewrites_backslash_require():
+    guard = ROOT / "scripts" / "playwright-epipe-guard.js"
+    stale = f'--max-old-space-size=128 --require "{guard}" extra'
+    rewritten = _windows_node_options_with_guard(stale, guard)
+    assert "\\" not in rewritten
+    assert rewritten.startswith("--max-old-space-size=128")
+    assert rewritten.endswith(f'--require "{str(guard).replace(chr(92), "/")}"') or (
+        f'--require "{str(guard).replace(chr(92), "/")}"' in rewritten
+    )
+    assert rewritten.count("playwright-epipe-guard.js") == 1
+    assert "extra" in rewritten
+
+
+def test_windows_node_options_require_survives_node_argv_parsing():
+    """Node 24 --require must still resolve after NODE_OPTIONS unescapes \\."""
+    guard = ROOT / "scripts" / "playwright-epipe-guard.js"
+    assert guard.is_file()
+    env = apply_playwright_node_env(
+        {},
+        platform_name="win32",
+        which=lambda name: str(ROOT / "scripts" / "node.exe") if name in {"node", "node.exe"} else None,
+    )
+    options = env.get("NODE_OPTIONS", "")
+    assert "--require" in options
+    result = subprocess.run(
+        ["node", "-e", "console.log('ok')"],
+        env={**os.environ, "NODE_OPTIONS": options},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+    assert "Cannot find module" not in result.stderr
+    assert "playwright-epipe-guard.js" not in result.stderr
 
 
 def test_posix_playwright_node_keeps_wrapper():
@@ -286,6 +340,8 @@ if __name__ == "__main__":
     test_xvfb_force_is_rejected_off_linux()
     test_invalid_xvfb_mode_is_rejected()
     test_windows_playwright_node_skips_posix_wrapper()
+    test_windows_node_options_rewrites_backslash_require()
+    test_windows_node_options_require_survives_node_argv_parsing()
     test_posix_playwright_node_keeps_wrapper()
     test_posix_rejects_wrapper_as_grok_playwright_node()
     test_process_group_settings_follow_platform()

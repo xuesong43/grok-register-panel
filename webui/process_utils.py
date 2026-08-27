@@ -32,15 +32,21 @@ def _process_snapshot(process) -> dict | None:
         info = getattr(process, "info", None)
         if not isinstance(info, dict):
             info = process.as_dict(
-                attrs=("pid", "cwd", "cmdline", "create_time"),
+                attrs=("pid", "cmdline", "create_time"),
                 ad_value=None,
             )
         pid = int(info.get("pid"))
         cwd_value = info.get("cwd")
         cmdline_value = info.get("cmdline")
-        if not cwd_value or not isinstance(cmdline_value, (list, tuple)):
+        if not isinstance(cmdline_value, (list, tuple)):
             return None
-        cwd = Path(str(cwd_value)).resolve()
+        if cwd_value:
+            try:
+                cwd = Path(str(cwd_value)).resolve()
+            except Exception:
+                cwd = Path(str(cwd_value))
+        else:
+            cwd = None
         cmdline = [str(part) for part in cmdline_value if str(part)]
         created = info.get("create_time")
         create_time = float(created) if created is not None else None
@@ -54,11 +60,13 @@ def _process_snapshot(process) -> dict | None:
         return None
 
 
-def _resolved_arg(arg: str, cwd: Path) -> Path | None:
+def _resolved_arg(arg: str, cwd: Path | None) -> Path | None:
     if not arg or arg.startswith("-"):
         return None
     candidate = Path(arg)
     if not candidate.is_absolute():
+        if cwd is None:
+            return None
         candidate = cwd / candidate
     try:
         return candidate.resolve()
@@ -71,9 +79,12 @@ def _snapshot_matches(
     root: str | os.PathLike[str],
     script_names: tuple[str, ...] | list[str],
 ) -> bool:
-    project_root = Path(root).resolve()
+    try:
+        project_root = Path(root).resolve()
+    except Exception:
+        project_root = Path(root)
     process_cwd = snapshot.get("cwd")
-    if process_cwd != project_root:
+    if process_cwd is not None and process_cwd != project_root:
         return False
     expected = {(project_root / name).resolve() for name in script_names}
     return any(
@@ -114,10 +125,23 @@ def find_managed_processes(
     now = time.time()
     try:
         iterator = psutil.process_iter(
-            attrs=("pid", "cwd", "cmdline", "create_time"),
+            attrs=("pid", "cmdline", "create_time"),
             ad_value=None,
         )
         for process in iterator:
+            if time.time() - now > 2.0:
+                break
+            # fast pre-filter: skip processes whose cmdline does not contain target script
+            try:
+                cmdline = process.info.get("cmdline") if isinstance(process.info, dict) else None
+                if not cmdline:
+                    # fallback for psutil without info
+                    cmdline = []
+                joined = " ".join(str(x) for x in cmdline) if isinstance(cmdline, (list, tuple)) else str(cmdline)
+                if not any(s in joined for s in script_names):
+                    continue
+            except Exception:
+                pass
             snapshot = _process_snapshot(process)
             if not snapshot or not _snapshot_matches(snapshot, root, script_names):
                 continue

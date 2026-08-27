@@ -304,9 +304,37 @@ def apply_playwright_node_env(
             str(real_node) if real_node is not None else "/usr/bin/node"
         )
     if platform.startswith("win") and guard.is_file() and spawn is not None:
-        marker = str(guard)
-        extra = f'--require "{marker}"'
-        existing = str(env.get("NODE_OPTIONS") or "")
-        if marker not in existing:
-            env["NODE_OPTIONS"] = f"{existing} {extra}".strip()
+        env["NODE_OPTIONS"] = _windows_node_options_with_guard(
+            str(env.get("NODE_OPTIONS") or ""),
+            guard,
+        )
     return env
+
+
+def _windows_node_options_with_guard(existing: str, guard: Path) -> str:
+    """Rewrite NODE_OPTIONS so --require uses a Node-safe path.
+
+    NODE_OPTIONS is parsed like a Unix argv. Unquoted backslashes in
+    ``D:\\Dev\\...`` are eaten as escapes, so Node looks for
+    ``D:DevOthergrok...\\playwright-epipe-guard.js`` and Camoufox never starts.
+    Always replace a stale backslash form instead of leaving it in place.
+    """
+    marker = str(guard).replace("\\", "/")
+    extra = f'--require "{marker}"'
+    tokens = existing.split()
+    kept: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        raw = token.strip().strip('"').replace("\\", "/")
+        if token == "--require" or token.startswith("--require="):
+            if token == "--require":
+                skip_next = True
+            continue
+        if "playwright-epipe-guard.js" in raw:
+            continue
+        kept.append(token)
+    rewritten = " ".join(kept + [extra]).strip()
+    return rewritten
